@@ -1,0 +1,100 @@
+Customise Version String
+When building custom kernels it is sometimes desirable to customise the kernel's version string - that reported by /proc/version:
+
+cat /proc/version
+Linux version 2.6.37.6-cyanogenmod-01951-g42059d4-dirty (tj@hephaestion) (gcc version 4.4.1 (Sourcery G++ Lite 2010q1-202) ) #5 PREEMPT Thu May 26 22:45:20 BST 2011
+(This example comes from building a kernel for an Android device from my working tree)
+
+Several aspects of this version string annoy me:
+
+username
+hostname
+compiler version
+I'd prefer to be able to replace the username@hostname (tj@hephaestion), which will usually mean nothing to anyone except me, with something more useful; in this case I'd prefer cyanogenmod@tjworld.net. I'd also prefer the compiler version to be less verbose and just show the numerical version 4.4.1.
+
+Understanding the Kernel Build Scripts
+
+These values come from a file that is generated when a kernel build is started. One of the first files to be created or updated is include/generated/compile.h:
+
+/* This file is auto generated, version 5 */
+/*  PREEMPT */
+#define UTS_MACHINE "arm"
+#define UTS_VERSION "#5 PREEMPT Thu May 26 22:45:20 BST 2011"
+#define LINUX_COMPILE_TIME "22:45:20"
+#define LINUX_COMPILE_BY "tj"
+#define LINUX_COMPILE_HOST "hephaestion"
+#define LINUX_COMPILE_DOMAIN "(none)"
+#define LINUX_COMPILER "gcc version 4.5.2 (Sourcery G++ Lite 2010q1-202) "
+Because this file is auto-generated it is not possibly to simply edit the contents, instead, the generating script has to be fooled into providing the values we prefer. The shell script that generates this file is scripts/mkcompile_h which uses the following code fragments to generate these values:
+
+  echo \#define LINUX_COMPILE_BY \"`whoami`\"
+  echo \#define LINUX_COMPILE_HOST \"`hostname | $UTS_TRUNCATE`\"
+
+  echo \#define LINUX_COMPILER \"`$CC -v 2>&1 | tail -n 1`\"
+In each case the output of an external command is used as the value.
+
+Intercepting External Commands
+
+The kernel shell scripts expect to find the external command executables on the system path.
+
+echo $PATH
+/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:
+For the system tools whoami and hostname this is usually the /usr/bin/ or /bin/. For the compiler it'll usually be /usr/bin/ (gcc) or - in my case using an ARM cross-compiler - /usr/local/bin/ (arm-none-linux-gnueabi-gcc).
+
+To intercept each tool the obvious way is to install interceptor scripts in a directory on the PATH that is searched before the directory each tool is in.
+
+The convention for the Linux  Filesystem Hierarchy Standard is for user installed tools to be placed in the /usr/local/ hierarchy. Conveniently the PATH includes these directories before the system directories precisely so locally built tools (often from more recent source, or with bug-fixes) can over-ride the older system tools.
+
+Interceptor Scripts
+
+Therefore, to intercept whoami and hostname, shell scripts of the same name in /usr/local/bin/ will be sufficient. Intercepting the GCC cross-compiler that is already in that directory means placing the interceptor script in /usr/local/sbin/. "sbin" is usually reserved (by convention only) for special system tools but there is no bar to using it.
+
+The scripts need some intelligence. They need to recognise when they have been called by the kernel build system's mkcompile_h and only provide fake output to that script. This is done by finding the parent process and checking 
+if it is mkcompile_h, and only providing custom output to it. When providing custom output whoami and hostname need to get the custom values from somewhere. It makes sense to look in the user's home directory. I decided to use:
+
+LINUX_COMPILE_BY=$HOME/linux-compile-by
+LINUX_COMPILE_HOST=$HOME/linux-compile-host
+These are simple text files containing the custom values. $HOME/linux-compile-by:
+
+cyanogenmod
+$HOME/linux-compile-host:
+
+tjworld.net
+For all other callers the interceptor scripts need to pass through to the original system tool. Because the interceptors don't know for sure where the system keeps the tools they are intercepting they need to be flexible when doing pass-through execution. The obvious way to do that is to temporarily edit the PATH and remove the directory containing the interceptor script from the list so when the original tool is called, the interceptor script doesn't end up calling itself (because it is found first in the PATH search).
+
+For the GCC interceptor the original tool has to be executed and its output filtered to remove the verbosity. This is achieved using the sed tool and a regular expression:
+
+PATH=$NEWPATH arm-none-linux-gnueabi-gcc "$@" 2>&1 | sed 's/^\(gcc version.*\).(.*/\1/'
+Installation
+
+The three scripts are attached to this article. Once copied into their respective locations they should be given executable permissions:
+
+sudo cp whoami /usr/local/bin/
+sudo cp hostname /usr/local/bin/
+sudo cp arm-none-linux-gnueabi-gcc /usr/local/sbin/
+sudo chmod a+x /usr/local/bin/whoami /usr/local/bin/hostname /usr/local/sbin/arm-none-linux-gnueabi-gcc
+
+Create the custom value files in the user home directory:
+
+echo "cyanogenmod" > $HOME/linux-compile-by
+echo "tjworld.net" > $HOME/linux-compile-host
+In Use
+
+With the scripts installed and configured all that is left is to do a kernel build as usual. If necessary, remove the existing include/generated/compile.h before starting the build.
+
+The resulting file will look something like this:
+
+/* This file is auto generated, version 6 */
+/*  PREEMPT */
+#define UTS_MACHINE "arm"
+#define UTS_VERSION "#6 PREEMPT Fri May 27 23:39:25 BST 2011"
+#define LINUX_COMPILE_TIME "23:39:25"
+#define LINUX_COMPILE_BY "cyanogenmod"
+#define LINUX_COMPILE_HOST "tjworld.net"
+#define LINUX_COMPILE_DOMAIN "(none)"
+#define LINUX_COMPILER "gcc version 4.5.2"
+Attachments
+
+arm-none-linux-gnueabi-gcc   (967 bytes) - added by tj 2 years ago. /usr/local/sbin/arm-none-linux-gnueabi-gcc
+whoami   (876 bytes) - added by tj 2 years ago. /usr/local/bin/whoami
+hostname   (885 bytes) - added by tj 2 years ago. /usr/local/bin/hostname
